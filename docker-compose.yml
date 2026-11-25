@@ -1,0 +1,11 @@
+services:
+  pokereader:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # One reverse proxy (Caddy/nginx) sits in front, so trust its X-Forwarded-For.
+      TRUST_PROXY: "1"
+    ports:
+      # Bound to localhost only: the reverse proxy provides HTTPS to the outside world.
+      - "127.0.0.1:3000:3000"
