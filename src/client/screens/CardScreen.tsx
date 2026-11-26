@@ -5,14 +5,13 @@ import { Icon } from '../components/Icon';
 import {
   buildScript,
   explainCost,
-  explainHp,
   explainResistance,
   explainRetreat,
   explainStage,
   explainWeakness,
 } from '../lib/explain';
 import { navigate } from '../lib/router';
-import { useSpeech } from '../lib/speech';
+import { useSpeech, useVoiceNames } from '../lib/speech';
 import { findCard, setPrefs, usePrefs, type SpeechSpeed } from '../lib/storage';
 
 const KIND_LABEL: Record<CardData['kind'], string> = {
@@ -30,7 +29,8 @@ const SPEEDS: { value: SpeechSpeed; emoji: string; label: string }[] = [
 export function CardScreen({ id }: { id: string }) {
   const entry = findCard(id);
   const prefs = usePrefs();
-  const speech = useSpeech(prefs.speechSpeed);
+  const speech = useSpeech(prefs.speechSpeed, prefs.voiceName);
+  const voiceNames = useVoiceNames();
 
   // A stale link (for example a removed card) just goes home.
   useEffect(() => {
@@ -45,6 +45,16 @@ export function CardScreen({ id }: { id: string }) {
     if (speech.speaking) speech.replay();
   }, [prefs.speechSpeed, speech]);
 
+  // Picking a voice says a few words in it, or restarts the reading if one is going.
+  const chooseVoice = (name: string | null) => {
+    setPrefs({ voiceName: name });
+    // The new choice reaches the speech hook on the next render.
+    setTimeout(() => {
+      if (speech.speaking) speech.replay();
+      else speech.speak([{ id: 'voice-sample', text: entry ? `Hi! This is ${entry.card.name}.` : 'Hi! I can read your card.' }]);
+    }, 0);
+  };
+
   const script = useMemo(() => (entry ? buildScript(entry.card) : []), [entry]);
   if (!entry) return null;
 
@@ -55,10 +65,9 @@ export function CardScreen({ id }: { id: string }) {
     return speech.supported && found ? () => speech.speak([found]) : undefined;
   };
   const stageNote = explainStage(card);
-  const hpNote = explainHp(card);
 
   return (
-    <div className="mx-auto min-h-dvh max-w-xl px-4 pb-44 pt-[max(1rem,env(safe-area-inset-top))]">
+    <div className="mx-auto min-h-dvh max-w-xl px-4 pb-60 pt-[max(1rem,env(safe-area-inset-top))]">
       <nav className="flex items-center justify-between gap-3">
         <button
           type="button"
@@ -112,10 +121,9 @@ export function CardScreen({ id }: { id: string }) {
           <Simple>{card.overallExplanation}</Simple>
         </Section>
 
-        {(hpNote || stageNote) && (
-          <Section id="basics" title="The basics" tone="bg-white" speech={speech} onListen={listen('basics')}>
-            {hpNote && <Simple>{hpNote}</Simple>}
-            {stageNote && <Simple>{stageNote}</Simple>}
+        {stageNote && (
+          <Section id="basics" title="How to play it" tone="bg-white" speech={speech} onListen={listen('basics')}>
+            <Simple>{stageNote}</Simple>
           </Section>
         )}
 
@@ -236,6 +244,9 @@ export function CardScreen({ id }: { id: string }) {
           onStop={speech.stop}
           onReplay={speech.replay}
           onSpeed={(speed) => setPrefs({ speechSpeed: speed })}
+          voices={voiceNames}
+          voice={prefs.voiceName}
+          onVoice={chooseVoice}
         />
       )}
     </div>
@@ -324,9 +335,12 @@ interface SpeechBarProps {
   onStop: () => void;
   onReplay: () => void;
   onSpeed: (speed: SpeechSpeed) => void;
+  voices: string[];
+  voice: string | null;
+  onVoice: (name: string | null) => void;
 }
 
-function SpeechBar({ speaking, canReplay, speed, onRead, onStop, onReplay, onSpeed }: SpeechBarProps) {
+function SpeechBar({ speaking, canReplay, speed, onRead, onStop, onReplay, onSpeed, voices, voice, onVoice }: SpeechBarProps) {
   return (
     <div className="fixed inset-x-0 bottom-0 z-20 border-t-[3px] border-ink bg-cream px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
       <div className="mx-auto grid max-w-xl gap-2.5">
@@ -376,6 +390,24 @@ function SpeechBar({ speaking, canReplay, speed, onRead, onStop, onReplay, onSpe
             </button>
           ))}
         </div>
+        {voices.length > 1 && (
+          <label className="flex items-center gap-2 font-display text-lg font-bold">
+            <span aria-hidden="true">🗣️</span>
+            <span>Voice</span>
+            <select
+              value={voice && voices.includes(voice) ? voice : ''}
+              onChange={(event) => onVoice(event.target.value || null)}
+              className="min-w-0 flex-1 rounded-full border-[2.5px] border-ink bg-white px-3 py-1.5 font-display text-lg font-bold"
+            >
+              <option value="">Best one (automatic)</option>
+              {voices.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
     </div>
   );

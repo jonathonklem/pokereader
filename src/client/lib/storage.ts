@@ -26,9 +26,11 @@ export type SpeechSpeed = 'slow' | 'normal' | 'fast';
 
 export interface Prefs {
   speechSpeed: SpeechSpeed;
+  /** Name of the voice chosen on this device. Null means pick the best one automatically. */
+  voiceName: string | null;
 }
 
-const DEFAULT_PREFS: Prefs = { speechSpeed: 'normal' };
+const DEFAULT_PREFS: Prefs = { speechSpeed: 'normal', voiceName: null };
 
 function read<T>(key: string, fallback: T): T {
   try {
