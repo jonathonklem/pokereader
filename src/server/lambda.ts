@@ -9,5 +9,5 @@ import { loadConfig } from './config';
  */
 export const handler = serverless(createApp(loadConfig()), {
   // Sent back base64-encoded so pictures and fonts survive the trip through Lambda.
-  binary: ['image/*', 'font/*', 'application/octet-stream'],
+  binary: ['image/*', 'font/*', 'audio/*', 'application/octet-stream'],
 });

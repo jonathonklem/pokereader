@@ -11,7 +11,7 @@ import {
   explainWeakness,
 } from '../lib/explain';
 import { navigate } from '../lib/router';
-import { useSpeech, useVoiceNames } from '../lib/speech';
+import { useSpeech, useVoices, type VoiceOption } from '../lib/speech';
 import { findCard, setPrefs, usePrefs, type SpeechSpeed } from '../lib/storage';
 
 const KIND_LABEL: Record<CardData['kind'], string> = {
@@ -29,8 +29,8 @@ const SPEEDS: { value: SpeechSpeed; emoji: string; label: string }[] = [
 export function CardScreen({ id }: { id: string }) {
   const entry = findCard(id);
   const prefs = usePrefs();
-  const speech = useSpeech(prefs.speechSpeed, prefs.voiceName);
-  const voiceNames = useVoiceNames();
+  const { cloud, voices } = useVoices();
+  const speech = useSpeech(prefs.speechSpeed, prefs.voiceName, cloud);
 
   // A stale link (for example a removed card) just goes home.
   useEffect(() => {
@@ -244,7 +244,8 @@ export function CardScreen({ id }: { id: string }) {
           onStop={speech.stop}
           onReplay={speech.replay}
           onSpeed={(speed) => setPrefs({ speechSpeed: speed })}
-          voices={voiceNames}
+          voices={voices}
+          autoVoice={!cloud}
           voice={prefs.voiceName}
           onVoice={chooseVoice}
         />
@@ -335,12 +336,14 @@ interface SpeechBarProps {
   onStop: () => void;
   onReplay: () => void;
   onSpeed: (speed: SpeechSpeed) => void;
-  voices: string[];
+  voices: VoiceOption[];
+  /** Offer "pick the best one for me"; only useful for the device's own voices. */
+  autoVoice: boolean;
   voice: string | null;
   onVoice: (name: string | null) => void;
 }
 
-function SpeechBar({ speaking, canReplay, speed, onRead, onStop, onReplay, onSpeed, voices, voice, onVoice }: SpeechBarProps) {
+function SpeechBar({ speaking, canReplay, speed, onRead, onStop, onReplay, onSpeed, voices, autoVoice, voice, onVoice }: SpeechBarProps) {
   return (
     <div className="fixed inset-x-0 bottom-0 z-20 border-t-[3px] border-ink bg-cream px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
       <div className="mx-auto grid max-w-xl gap-2.5">
@@ -395,14 +398,14 @@ function SpeechBar({ speaking, canReplay, speed, onRead, onStop, onReplay, onSpe
             <span aria-hidden="true">🗣️</span>
             <span>Voice</span>
             <select
-              value={voice && voices.includes(voice) ? voice : ''}
+              value={voices.some((v) => v.id === voice) ? (voice ?? '') : autoVoice ? '' : (voices[0]?.id ?? '')}
               onChange={(event) => onVoice(event.target.value || null)}
               className="min-w-0 flex-1 rounded-full border-[2.5px] border-ink bg-white px-3 py-1.5 font-display text-lg font-bold"
             >
-              <option value="">Best one (automatic)</option>
-              {voices.map((name) => (
-                <option key={name} value={name}>
-                  {name}
+              {autoVoice && <option value="">Best one (automatic)</option>}
+              {voices.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
                 </option>
               ))}
             </select>

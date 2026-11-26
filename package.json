@@ -19,6 +19,7 @@
     "test": "tsx --test src/server/scan.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-polly": "^3.1178.0",
     "dotenv": "^18.0.10",
     "express": "^4.22.3",
     "express-rate-limit": "^8.7.5",

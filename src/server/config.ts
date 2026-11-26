@@ -24,6 +24,8 @@ export interface AppConfig {
    * Used when a proxy in front (e.g. a Cloudflare Worker behind Access) is the only allowed caller.
    */
   originSecret: string;
+  /** True when the server may use Amazon Polly for read-aloud voices. */
+  cloudVoices: boolean;
 }
 
 function positiveNumber(value: string | undefined, fallback: number): number {
@@ -59,5 +61,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // The server bundle is dist/server/index.js, so the client build is next door.
     clientDir: path.resolve(here, '../client'),
     originSecret: (env.ORIGIN_SECRET ?? '').trim(),
+    // On by default on AWS Lambda (the deploy script grants the permission). Elsewhere set POLLY_VOICES=true.
+    cloudVoices: env.POLLY_VOICES ? env.POLLY_VOICES === 'true' : Boolean(env.AWS_LAMBDA_FUNCTION_NAME),
   };
 }

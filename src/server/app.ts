@@ -9,11 +9,14 @@ import type { HealthResponse } from '../shared/types';
 import type { AppConfig } from './config';
 import { ScanError, failureBody } from './errors';
 import { createScanRouter } from './routes/scan';
+import { createSpeakRouter } from './routes/speak';
+import { PollySpeaker, type Speaker } from './services/speech/polly';
 import { DeepSeekAnalyzer } from './services/ai/deepseek';
 import type { CardAnalyzer } from './services/ai/types';
 
-export function createApp(config: AppConfig, deps: { analyzer?: CardAnalyzer } = {}) {
+export function createApp(config: AppConfig, deps: { analyzer?: CardAnalyzer; speaker?: Speaker } = {}) {
   const analyzer = deps.analyzer ?? new DeepSeekAnalyzer(config.deepseek);
+  const speaker = deps.speaker ?? (config.cloudVoices ? new PollySpeaker() : null);
   const app = express();
 
   app.disable('x-powered-by');
@@ -55,7 +58,7 @@ export function createApp(config: AppConfig, deps: { analyzer?: CardAnalyzer } =
 
   app.get('/api/health', (_req, res: Response<HealthResponse>) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ ok: true, configured: analyzer.configured });
+    res.json({ ok: true, configured: analyzer.configured, cloudVoices: speaker !== null });
   });
 
   const scanLimiter = rateLimit({
@@ -68,6 +71,20 @@ export function createApp(config: AppConfig, deps: { analyzer?: CardAnalyzer } =
     },
   });
   app.use('/api/scan', scanLimiter);
+  // Reading one card aloud is about ten requests, so this allows plenty of cards but not a runaway bill.
+  app.use(
+    '/api/speak',
+    rateLimit({
+      windowMs: config.rateLimit.windowMs,
+      limit: config.rateLimit.max * 10,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      handler: (_req, res) => {
+        res.status(429).json(failureBody('rate_limited'));
+      },
+    }),
+  );
+  app.use('/api', createSpeakRouter(speaker));
   app.use('/api', createScanRouter(config, analyzer));
   app.use('/api', (_req, res) => {
     res.status(404).json(failureBody('server_error'));

@@ -57,6 +57,9 @@ if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
     --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
   sleep 10 # give IAM a moment before Lambda tries to use the role
 fi
+# Lets the function use Amazon Polly for the read-aloud voices.
+aws iam put-role-policy --role-name "$ROLE" --policy-name polly-speech --policy-document \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"polly:SynthesizeSpeech","Resource":"*"}]}'
 ROLE_ARN="$(aws iam get-role --role-name "$ROLE" --query Role.Arn --output text)"
 
 # Written to a private temp file so the key never appears in a command line or the terminal.

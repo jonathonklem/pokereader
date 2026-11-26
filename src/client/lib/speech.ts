@@ -1,8 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SpeechSection } from './explain';
+import { CLOUD_VOICES, MAX_SPEECH_CHARS } from '../../shared/voices';
+import { fetchHealth } from './api';
 import type { SpeechSpeed } from './storage';
 
 export const SPEED_RATES: Record<SpeechSpeed, number> = { slow: 0.7, normal: 0.9, fast: 1.15 };
+/** The cloud voices already speak at a good pace, so they are slowed and sped up less. */
+const CLOUD_RATES: Record<SpeechSpeed, number> = { slow: 0.8, normal: 1, fast: 1.2 };
+
+/** One shared player: once a tap has started it, phones let it keep playing section after section. */
+const player: HTMLAudioElement | null = typeof Audio !== 'undefined' ? new Audio() : null;
+
+let cloudCheck: Promise<boolean> | null = null;
+/** Asks the server once whether it can read aloud in the cloud voices. */
+function cloudAvailable(): Promise<boolean> {
+  cloudCheck ??= fetchHealth().then((health) => Boolean(health?.cloudVoices && player));
+  return cloudCheck;
+}
+
+function cloudVoiceId(chosen: string | null): string {
+  return CLOUD_VOICES.find((v) => v.id === chosen)?.id ?? CLOUD_VOICES[0].id;
+}
+
+function speechUrl(text: string, voice: string): string {
+  return `/api/speak?voice=${encodeURIComponent(voice)}&text=${encodeURIComponent(text.slice(0, MAX_SPEECH_CHARS))}`;
+}
+
+export interface VoiceOption {
+  id: string;
+  label: string;
+}
+
 
 const synth: SpeechSynthesis | null =
   typeof window !== 'undefined' && 'speechSynthesis' in window ? window.speechSynthesis : null;
@@ -47,17 +75,30 @@ function pickVoice(chosen: string | null): SpeechSynthesisVoice | null {
   return voices.find((v) => v.name === chosen) ?? voices[0] ?? null;
 }
 
-/** Voice names for the picker, best first. Voices load late on some phones, so this updates itself. */
-export function useVoiceNames(): string[] {
-  const [names, setNames] = useState<string[]>([]);
+/**
+ * Voices for the picker. With the cloud voices: a short list of men, women and kids.
+ * Without them: whatever the device has, best first (these load late on some phones).
+ */
+export function useVoices(): { cloud: boolean; voices: VoiceOption[] } {
+  const [cloud, setCloud] = useState(false);
+  const [deviceNames, setDeviceNames] = useState<string[]>([]);
   useEffect(() => {
-    if (!synth) return;
-    const load = () => setNames([...new Set(rankedVoices().map((v) => v.name))]);
+    let alive = true;
+    void cloudAvailable().then((ok) => {
+      if (alive) setCloud(ok);
+    });
+    if (!synth) return () => void (alive = false);
+    const load = () => setDeviceNames([...new Set(rankedVoices().map((v) => v.name))]);
     load();
     synth.addEventListener?.('voiceschanged', load);
-    return () => synth.removeEventListener?.('voiceschanged', load);
+    return () => {
+      alive = false;
+      synth.removeEventListener?.('voiceschanged', load);
+    };
   }, []);
-  return names;
+  return cloud
+    ? { cloud, voices: CLOUD_VOICES.map((v) => ({ id: v.id, label: v.label })) }
+    : { cloud, voices: deviceNames.map((name) => ({ id: name, label: name })) };
 }
 
 /** A little lift so it does not drone: brighter overall, higher still for "Zap!" and for questions. */
@@ -73,67 +114,109 @@ function sentences(text: string): string[] {
 }
 
 /**
- * Text to speech with the browser's Web Speech API.
- * Reads a list of sections in order and reports which one is being spoken,
- * so the screen can highlight it. `supported` is false where there is no
- * speech engine; the app then simply hides the audio controls.
+ * Reads a list of sections aloud, in order, and reports which one is being spoken
+ * so the screen can highlight it.
+ *
+ * With `cloud` on, each section is spoken by the server's voices and played as audio.
+ * Otherwise, or if that fails part way, the browser's own Web Speech voice is used.
+ * `supported` is false where neither exists; the app then hides the audio controls.
  */
-export function useSpeech(speed: SpeechSpeed, voiceName: string | null = null) {
+export function useSpeech(speed: SpeechSpeed, voiceName: string | null = null, cloud = false) {
   const [speaking, setSpeaking] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [lastRead, setLastRead] = useState<SpeechSection[] | null>(null);
   const run = useRef(0);
-  const rate = useRef(SPEED_RATES[speed]);
-  rate.current = SPEED_RATES[speed];
-  const chosenVoice = useRef(voiceName);
-  chosenVoice.current = voiceName;
+  const latest = useRef({ speed, voiceName, cloud });
+  latest.current = { speed, voiceName, cloud };
+
+  const silence = useCallback(() => {
+    synth?.cancel();
+    if (player) {
+      player.onended = null;
+      player.onerror = null;
+      player.pause();
+    }
+  }, []);
 
   const stop = useCallback(() => {
     run.current += 1;
-    synth?.cancel();
+    silence();
     setSpeaking(false);
     setActiveId(null);
-  }, []);
+  }, [silence]);
 
-  const speak = useCallback((sections: SpeechSection[]) => {
-    if (!synth || sections.length === 0) return;
-    const thisRun = ++run.current;
-    synth.cancel();
-    const voice = pickVoice(chosenVoice.current);
-
-    const queue = sections.flatMap((section) => sentences(section.text).map((text) => ({ id: section.id, text })));
-    queue.forEach((item, index) => {
-      const utterance = new SpeechSynthesisUtterance(item.text);
-      if (voice) utterance.voice = voice;
-      utterance.lang = voice?.lang ?? 'en-US';
-      utterance.rate = rate.current;
-      utterance.pitch = pitchFor(item.text);
-      utterance.onstart = () => {
-        if (run.current === thisRun) setActiveId(item.id);
-      };
-      const finish = () => {
-        if (run.current === thisRun && index === queue.length - 1) {
-          setSpeaking(false);
-          setActiveId(null);
-        }
-      };
-      utterance.onend = finish;
-      utterance.onerror = () => {
+  const speakOnDevice = useCallback(
+    (sections: SpeechSection[], thisRun: number) => {
+      if (!synth) return stop();
+      const voice = pickVoice(latest.current.voiceName);
+      const queue = sections.flatMap((section) => sentences(section.text).map((text) => ({ id: section.id, text })));
+      queue.forEach((item, index) => {
+        const utterance = new SpeechSynthesisUtterance(item.text);
+        if (voice) utterance.voice = voice;
+        utterance.lang = voice?.lang ?? 'en-US';
+        utterance.rate = SPEED_RATES[latest.current.speed];
+        utterance.pitch = pitchFor(item.text);
+        utterance.onstart = () => {
+          if (run.current === thisRun) setActiveId(item.id);
+        };
+        utterance.onend = () => {
+          if (run.current === thisRun && index === queue.length - 1) stop();
+        };
         // Any failure ends this read-through rather than leaving the button stuck on "Stop".
-        if (run.current === thisRun) {
-          run.current += 1;
-          synth.cancel();
-          setSpeaking(false);
-          setActiveId(null);
-        }
-      };
-      synth.speak(utterance);
-    });
+        utterance.onerror = () => {
+          if (run.current === thisRun) stop();
+        };
+        synth.speak(utterance);
+      });
+    },
+    [stop],
+  );
 
-    setLastRead(sections);
-    setSpeaking(true);
-    setActiveId(sections[0]?.id ?? null);
-  }, []);
+  const speakFromCloud = useCallback(
+    (sections: SpeechSection[], thisRun: number) => {
+      if (!player) return speakOnDevice(sections, thisRun);
+      const voice = cloudVoiceId(latest.current.voiceName);
+      const play = (index: number) => {
+        if (run.current !== thisRun) return;
+        const section = sections[index];
+        if (!section) return stop();
+        // If the server voice fails, the device's own voice finishes the reading.
+        const fallBack = () => {
+          if (run.current !== thisRun) return;
+          player.onended = null;
+          player.onerror = null;
+          speakOnDevice(sections.slice(index), thisRun);
+        };
+        setActiveId(section.id);
+        player.onended = () => play(index + 1);
+        player.onerror = fallBack;
+        player.src = speechUrl(section.text, voice);
+        const rate = CLOUD_RATES[latest.current.speed];
+        player.defaultPlaybackRate = rate;
+        player.playbackRate = rate;
+        player.play().catch((err: unknown) => {
+          // "AbortError" just means a newer play() or stop() took over.
+          if ((err as DOMException | null)?.name !== 'AbortError') fallBack();
+        });
+      };
+      play(0);
+    },
+    [speakOnDevice, stop],
+  );
+
+  const speak = useCallback(
+    (sections: SpeechSection[]) => {
+      if (sections.length === 0 || (!synth && !player)) return;
+      const thisRun = ++run.current;
+      silence();
+      setLastRead(sections);
+      setSpeaking(true);
+      setActiveId(sections[0]?.id ?? null);
+      if (latest.current.cloud) speakFromCloud(sections, thisRun);
+      else speakOnDevice(sections, thisRun);
+    },
+    [silence, speakFromCloud, speakOnDevice],
+  );
 
   const replay = useCallback(() => {
     if (lastRead) speak(lastRead);
@@ -153,9 +236,17 @@ export function useSpeech(speed: SpeechSpeed, voiceName: string | null = null) {
     return () => {
       document.removeEventListener('visibilitychange', onHide);
       run.current += 1;
-      synth?.cancel();
+      silence();
     };
-  }, [stop]);
+  }, [stop, silence]);
 
-  return { supported: synth !== null, speaking, activeId, canReplay: lastRead !== null, speak, stop, replay };
+  return {
+    supported: synth !== null || (cloud && player !== null),
+    speaking,
+    activeId,
+    canReplay: lastRead !== null,
+    speak,
+    stop,
+    replay,
+  };
 }

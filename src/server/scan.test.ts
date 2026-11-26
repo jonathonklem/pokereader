@@ -252,7 +252,7 @@ test('missing API key gives a clear configuration error and makes no API call', 
   expectFailure(await scan(base, await cardPhoto()), 503, 'not_configured');
   assert.equal(upstreamCalls.length, 0);
   const health = await (await fetch(`${base}/api/health`)).json();
-  assert.deepEqual(health, { ok: true, configured: false });
+  assert.deepEqual(health, { ok: true, configured: false, cloudVoices: false });
 });
 
 test('unsupported file type is rejected', async () => {
@@ -299,4 +299,31 @@ test('origin secret, when set, blocks callers that do not send it', async () => 
   assert.equal((await fetch(`${base}/api/health`, { headers: { 'x-origin-secret': 'wrong' } })).status, 403);
   const ok = await fetch(`${base}/api/health`, { headers: { 'x-origin-secret': 'only-the-proxy-knows' } });
   assert.equal(ok.status, 200);
+});
+
+test('speak returns audio from the speaker, and rejects unknown voices and missing text', async () => {
+  const asked: string[] = [];
+  const config = loadConfig({ DEEPSEEK_API_KEY: SECRET, DEEPSEEK_BASE_URL: upstreamUrl } as NodeJS.ProcessEnv);
+  const speaker = {
+    speak: async (text: string, voice: string) => {
+      asked.push(`${voice}:${text}`);
+      return Buffer.from('fake-mp3');
+    },
+  };
+  const base = await listen(http.createServer(createApp(config, { speaker })));
+  const ok = await fetch(`${base}/api/speak?voice=Ruth&text=${encodeURIComponent('Zap!  Hello')}`);
+  assert.equal(ok.status, 200);
+  assert.match(ok.headers.get('content-type') ?? '', /audio\/mpeg/);
+  assert.equal(Buffer.from(await ok.arrayBuffer()).toString(), 'fake-mp3');
+  assert.deepEqual(asked, ['Ruth:Zap! Hello']);
+  assert.equal((await fetch(`${base}/api/speak?voice=Zarvox&text=hi`)).status, 400);
+  assert.equal((await fetch(`${base}/api/speak?voice=Ruth`)).status, 400);
+  assert.equal((await fetch(`${base}/api/speak?voice=Ruth&text=${'a'.repeat(1501)}`)).status, 400);
+  assert.equal(asked.length, 1);
+  const health = (await (await fetch(`${base}/api/health`)).json()) as { cloudVoices: boolean };
+  assert.equal(health.cloudVoices, true);
+});
+
+test('speak is off when cloud voices are not enabled', async () => {
+  assert.equal((await fetch(`${await startApp()}/api/speak?voice=Ruth&text=hi`)).status, 404);
 });

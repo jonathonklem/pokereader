@@ -98,4 +98,6 @@ export type ScanResponse = ScanSuccess | ScanFailure;
 export interface HealthResponse {
   ok: true;
   configured: boolean;
+  /** True when the server can read aloud in the cloud voices (see shared/voices.ts). */
+  cloudVoices: boolean;
 }
